@@ -1,10 +1,14 @@
 name: CI
 
-# Build and gate the module on the Linux images that matter: the AlmaLinux 8
-# floor (glibc 2.28, systemd 239 -- the only reason this module exists), 9 and
-# 10 for coexistence where userdb is already present, and Debian for a current
-# glibc and the multiarch module path. No macOS, FreeBSD or musl: NSS loadable
-# modules are glibc only.
+# Build and gate the module on the glibc/toolchains it actually ships to. The
+# module is installed only where stock nss-systemd cannot serve userdb -- the
+# RHEL 8 family (systemd 239, glibc 2.28) -- so AlmaLinux 8 is the floor and
+# the one real deployment target. Debian 12 is a current-gcc hygiene row: a
+# newer compiler flags different -Wconversion/-Wall cases, cheap insurance
+# against code only gcc 8.5 accepts; it is not a deployment target, since a
+# host with userdb uses nss-systemd, not this module. AlmaLinux 9 and 10 were
+# dropped for that reason -- they have userdb and would never load this module.
+# No macOS, FreeBSD or musl: NSS loadable modules are glibc only.
 #
 #   gh workflow run ci.yml --ref <branch>   # for a branch with no PR yet
 on:
@@ -38,16 +42,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: almalinux8     # glibc 2.28, systemd 239 -- the floor
+          - name: almalinux8     # glibc 2.28, gcc 8.5 -- the floor and the only deployment target
             container: almalinux:8
             family: el
-          - name: almalinux9     # userdb present; coexistence check
-            container: almalinux:9
-            family: el
-          - name: almalinux10    # newest EL
-            container: almalinux:10
-            family: el
-          - name: debian12       # current glibc, multiarch module path
+          - name: debian12       # a current glibc/gcc, toolchain hygiene only -- not a deployment target
             container: debian:12
             family: debian
     steps:
