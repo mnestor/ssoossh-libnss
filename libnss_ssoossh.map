@@ -1,0 +1,25 @@
+/* ELF version script (GNU ld, LLVM lld).
+ *
+ * glibc dlopens this module and looks up the NSS entry points by name in its
+ * dynamic symbol table, so exactly those must be global and nothing else may
+ * be. A helper named parse() or a vendored jsmn symbol left visible is a
+ * name that can collide inside the loading process. -fvisibility=hidden
+ * handles our own translation units; this handles anything static-linked in
+ * that was compiled without it.
+ *
+ * Deliberately absent: setpwent/getpwent/endpwent and the group equivalents.
+ * Leaving the enumeration entry points unexported is what keeps this source
+ * non-enumerable -- `getent passwd` with no name resolves nothing here, which
+ * is the property that distinguishes the module from an nss_db render.
+ */
+{
+    global:
+        _nss_ssoossh_getpwnam_r;
+        _nss_ssoossh_getpwuid_r;
+        _nss_ssoossh_getgrnam_r;
+        _nss_ssoossh_getgrgid_r;
+        _nss_ssoossh_getspnam_r;
+        _nss_ssoossh_initgroups_dyn;
+    local:
+        *;
+};

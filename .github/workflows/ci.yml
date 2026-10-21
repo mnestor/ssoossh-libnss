@@ -1,0 +1,104 @@
+name: CI
+
+# Build and gate the module on the Linux images that matter: the AlmaLinux 8
+# floor (glibc 2.28, systemd 239 -- the only reason this module exists), 9 and
+# 10 for coexistence where userdb is already present, and Debian for a current
+# glibc and the multiarch module path. No macOS, FreeBSD or musl: NSS loadable
+# modules are glibc only.
+#
+#   gh workflow run ci.yml --ref <branch>   # for a branch with no PR yet
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Build dependencies per image family. ca-certificates is for the checkout:
+# the debian image ships no trust store, so git over https cannot verify
+# github.com and actions/checkout fails before anything compiles. glibc-devel
+# gives the EL builds <nss.h> and the libdl symlink the load test links.
+env:
+  INSTALL_debian: apt-get update && apt-get install -y --no-install-recommends
+    ca-certificates build-essential git
+  INSTALL_el: dnf install -y gcc make git glibc-devel
+
+jobs:
+  linux:
+    name: linux (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: almalinux8     # glibc 2.28, systemd 239 -- the floor
+            container: almalinux:8
+            family: el
+          - name: almalinux9     # userdb present; coexistence check
+            container: almalinux:9
+            family: el
+          - name: almalinux10    # newest EL
+            container: almalinux:10
+            family: el
+          - name: debian12       # current glibc, multiarch module path
+            container: debian:12
+            family: debian
+    steps:
+      - name: Install build dependencies
+        run: ${{ env[format('INSTALL_{0}', matrix.family)] }}
+
+      - uses: actions/checkout@v4
+
+      # git describe drives the version string; a checkout owned by a different
+      # uid than the container user makes git refuse to read it.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Report the toolchain under test
+        run: |
+          cc --version | head -1
+          ldd --version | head -1
+
+      - name: Build
+        run: make
+
+      - name: Symbol, load and unit gates
+        run: make test
+
+      - name: No stdio in the module
+        run: make check-stdio
+
+      - name: Size gate
+        run: make check-size
+
+      - name: Sanitiser build and unit suite
+        run: make san
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - name: Install lint tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git clang-format cppcheck
+
+      - uses: actions/checkout@v4
+
+      - name: clang-format
+        run: clang-format --dry-run --Werror
+          src/*.c src/*.h tests/*.c tests/unit/*.c tools/*.c
+
+      - name: cppcheck
+        run: cppcheck --quiet --error-exitcode=1
+          --enable=warning,portability --suppress=missingIncludeSystem
+          -Isrc src tests tools

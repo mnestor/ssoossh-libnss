@@ -1,0 +1,21 @@
+# How to add to this file:
+#
+#   * Anchor with a leading "/" unless the rule genuinely has to match at
+#     every depth. An unanchored prefix glob is how a source file ends up
+#     invisible in a fresh clone while still working on the machine that
+#     wrote it.
+
+# Build output.
+/build/
+/libnss_ssoossh.so.2
+/tests/loadtest
+/tests/unit_tests
+
+# Release artifacts from `make dist`.
+/dist/
+
+# Third-party skill checkouts, which carry their own .git.
+/.claude/skills
+
+# Local secrets (signing, tokens). Never commit this.
+/.env.local
