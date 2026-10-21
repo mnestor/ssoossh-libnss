@@ -18,9 +18,11 @@
 #include "../third_party/jsmn/jsmn.h"
 #pragma GCC diagnostic pop
 
-/* A userdb record is a few dozen tokens; 512 is room for a shape that grew
- * and a hard stop for one trying to make us walk a deep structure. */
-#define MAX_TOKENS 512
+/* A userdb record is a few dozen tokens; 256 is room for a shape that grew
+ * and a hard stop for one trying to make us walk a deep structure. Sized
+ * modestly because each json call puts this array on the stack, and the
+ * entry points run inside sshd and sudo. */
+#define MAX_TOKENS 256
 
 /* Writes one UTF-8 encoding of a code point. Only used from \uXXXX handling,
  * so the range is bounded. */

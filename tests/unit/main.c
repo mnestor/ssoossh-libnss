@@ -8,6 +8,7 @@ int main(void)
     buf_tests();
     record_tests();
     config_tests();
+    varlink_tests();
 
     if (test_failures != 0) {
         printf("unit: %d failure(s)\n", test_failures);
