@@ -1,22 +1,13 @@
 /* Unit tests for the NSS result-buffer bump allocator (src/buf.c). Pure and
  * daemon-independent: the buffer protocol is where an off-by-one becomes a
- * heap overwrite inside sshd, so it is tested on its own, including the
- * boundaries (exact fit, one byte over, alignment, empty buffer). */
-#include "buf.h"
+ * heap overwrite inside sshd, so it is tested on its own, boundaries included
+ * (exact fit, one byte over, alignment, empty buffer). */
+#include "test.h"
 
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            printf("FAIL: %s\n", (msg));                                       \
-            failures++;                                                        \
-        }                                                                      \
-    } while (0)
+#include "buf.h"
 
 /* should copy a string and advance the offset when it fits exactly */
 static void test_strdup_exact_fit(void)
@@ -79,18 +70,11 @@ static void test_empty_buffer(void)
     CHECK(buf_strdup(&b, "") == NULL, "empty: even the NUL fails");
 }
 
-int main(void)
+void buf_tests(void)
 {
     test_strdup_exact_fit();
     test_strdup_one_over();
     test_failed_alloc_is_recoverable();
     test_alignment();
     test_empty_buffer();
-
-    if (failures != 0) {
-        printf("unit: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("unit: ok\n");
-    return 0;
 }
