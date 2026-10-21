@@ -87,7 +87,7 @@ STRIP      ?= strip --strip-unneeded
 SIZE_LIMIT ?= 262144
 
 .PHONY: all clean test check-symbols check-stdio check-size san lint install \
-        probe help
+        probe integration help
 
 all: $(MODULE)
 
@@ -163,6 +163,17 @@ test: check-symbols tests/loadtest tests/unit_tests
 	@./tests/loadtest ./$(MODULE)
 	@./tests/unit_tests
 
+# An in-tree end-to-end test of the socket transport: a forked stub server
+# answers canned varlink over a real AF_UNIX socket while the parent drives
+# vl_lookup/vl_memberships and the failure paths. Separate from `make test`
+# because it forks and binds a socket; linked against the module's own objects.
+tests/integration: tests/integration.c $(OBJ)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANLDFLAGS) -o $@ tests/integration.c $(OBJ) \
+	    $(LDLIBS)
+
+integration: tests/integration
+	@./tests/integration $(BUILD)/it.sock
+
 # make SAN=1 turns the sanitisers on for everything built in the invocation,
 # the unit suite included; `make san` is that plus the clean rebuild the
 # changed flags require.
@@ -203,11 +214,12 @@ install: $(MODULE)
 	@echo "add 'ssoossh' to passwd:, group:, shadow: and initgroups: in /etc/nsswitch.conf"
 
 clean:
-	rm -rf $(BUILD) $(MODULE) tests/loadtest tests/unit_tests
+	rm -rf $(BUILD) $(MODULE) tests/loadtest tests/unit_tests tests/integration
 
 help:
 	@echo "make            build $(MODULE)"
 	@echo "make test       symbol gate, load gate, and the unit suite"
+	@echo "make integration  socket transport against a forked stub server"
 	@echo "make san        rebuild under ASan/UBSan and re-test"
 	@echo "make check-stdio  assert the module writes to neither stdout nor stderr"
 	@echo "make check-size   assert the stripped module is under $(SIZE_LIMIT) bytes"

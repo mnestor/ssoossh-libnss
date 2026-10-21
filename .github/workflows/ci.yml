@@ -72,6 +72,9 @@ jobs:
       - name: Symbol, load and unit gates
         run: make test
 
+      - name: Socket transport integration test
+        run: make integration
+
       - name: No stdio in the module
         run: make check-stdio
 

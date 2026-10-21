@@ -10,6 +10,7 @@
 /libnss_ssoossh.so.2
 /tests/loadtest
 /tests/unit_tests
+/tests/integration
 
 # Release artifacts from `make dist`.
 /dist/
