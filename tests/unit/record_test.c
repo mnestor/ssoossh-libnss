@@ -152,6 +152,55 @@ static void test_type_mismatch(void)
           "types: string on a number value fails");
 }
 
+/* should map groupName and gid, with gr_mem left for the caller */
+static void test_group_record(void)
+{
+    const char *rec = "{\"groupName\":\"devs\",\"gid\":4000,"
+                      "\"privileged\":{\"hashedPassword\":[\"\"]}}";
+    char raw[128];
+    struct nss_buf b;
+    struct group gr;
+    int rc;
+
+    buf_init(&b, raw, sizeof(raw));
+    rc = record_group_to_group(rec, strlen(rec), &gr, &b);
+    CHECK(rc == 0, "group: returns 0");
+    CHECK(rc == 0 && strcmp(gr.gr_name, "devs") == 0, "group: gr_name");
+    CHECK(rc == 0 && gr.gr_gid == 4000, "group: gr_gid");
+    CHECK(rc == 0 && strcmp(gr.gr_passwd, "x") == 0, "group: gr_passwd is x");
+    CHECK(rc == 0 && gr.gr_mem == NULL, "group: gr_mem left NULL");
+}
+
+/* should decline a group record missing gid or groupName */
+static void test_group_missing(void)
+{
+    const char *no_gid = "{\"groupName\":\"devs\"}";
+    const char *no_name = "{\"gid\":4000}";
+    char raw[128];
+    struct nss_buf b;
+    struct group gr;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_group_to_group(no_gid, strlen(no_gid), &gr, &b) == EINVAL,
+          "group: missing gid is EINVAL");
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_group_to_group(no_name, strlen(no_name), &gr, &b) == EINVAL,
+          "group: missing groupName is EINVAL");
+}
+
+/* should return ERANGE when the group name does not fit */
+static void test_group_buffer_too_small(void)
+{
+    const char *rec = "{\"groupName\":\"devs\",\"gid\":4000}";
+    char raw[2];
+    struct nss_buf b;
+    struct group gr;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_group_to_group(rec, strlen(rec), &gr, &b) == ERANGE,
+          "group: small buffer is ERANGE");
+}
+
 void record_tests(void)
 {
     test_full_record();
@@ -162,4 +211,7 @@ void record_tests(void)
     test_escaping();
     test_envelope_unwrap();
     test_type_mismatch();
+    test_group_record();
+    test_group_missing();
+    test_group_buffer_too_small();
 }

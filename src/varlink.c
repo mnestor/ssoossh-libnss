@@ -84,47 +84,59 @@ static bool put_u32(char **p, char *end, uint32_t v)
     return true;
 }
 
-int vl_build_request(char *buf, size_t cap, const char *method,
-                     const char *service, const char *key, const char *strval,
-                     const uint32_t *numval)
+/* Writes {"method":"<method>",[<"more":true,">]"parameters":{"service":
+ * "<service>","<key>":<value>}} into buf, NUL-terminated. value is strval
+ * (escaped string) or *numval. Returns 0 or -1 on overflow / bad arguments. */
+static int build(char *buf, size_t cap, const char *method, bool more,
+                 const char *service, const char *key, const char *strval,
+                 const uint32_t *numval)
 {
     char *p = buf;
     char *end = buf + cap;
 
-    /* Exactly one key kind. */
     if ((strval == NULL) == (numval == NULL)) {
         return -1;
     }
-
     if (!put(&p, end, "{\"method\":\"") || !put(&p, end, method) ||
-        !put(&p, end, "\",\"parameters\":{\"service\":\"") ||
+        !put(&p, end, "\",") || (more && !put(&p, end, "\"more\":true,")) ||
+        !put(&p, end, "\"parameters\":{\"service\":\"") ||
         !put_escaped(&p, end, service) || !put(&p, end, "\",\"") ||
         !put(&p, end, key) || !put(&p, end, "\":")) {
         return -1;
     }
-
     if (strval != NULL) {
         if (!put(&p, end, "\"") || !put_escaped(&p, end, strval) ||
             !put(&p, end, "\"")) {
             return -1;
         }
-    } else {
-        if (!put_u32(&p, end, *numval)) {
-            return -1;
-        }
-    }
-
-    if (!put(&p, end, "}}")) {
+    } else if (!put_u32(&p, end, *numval)) {
         return -1;
     }
-    if ((size_t)(end - p) < 1) {
+    if (!put(&p, end, "}}") || (size_t)(end - p) < 1) {
         return -1;
     }
     *p = '\0';
     return 0;
 }
 
+int vl_build_request(char *buf, size_t cap, const char *method,
+                     const char *service, const char *key, const char *strval,
+                     const uint32_t *numval)
+{
+    return build(buf, cap, method, false, service, key, strval, numval);
+}
+
 /* --- reply classification (pure, unit-tested) --- */
+
+/* True when err names a daemon-level "no usable record" condition, which the
+ * caller treats as not-found rather than a hard failure (U3). */
+static bool err_is_not_found(const char *err)
+{
+    return strstr(err, "NoRecordFound") != NULL ||
+           strstr(err, "ConflictingRecordFound") != NULL ||
+           strstr(err, "NonMatchingRecordFound") != NULL ||
+           strstr(err, "ServiceNotAvailable") != NULL;
+}
 
 enum vl_status vl_parse_reply(const char *reply, size_t len, const char **rec,
                               size_t *rec_len, bool *incomplete)
@@ -141,23 +153,12 @@ enum vl_status vl_parse_reply(const char *reply, size_t len, const char **rec,
         return VL_UNAVAIL;
     }
 
-    /* An error reply: {"error":"io.systemd.UserDatabase.<Name>", ...}. The
-     * daemon-level "no usable record" errors fall through as not-found (U3:
-     * unavailable reaches callers as not found); anything else is a transport
-     * or protocol problem. */
     if (json_string(reply, len, NULL, NULL, "error", err, sizeof(err))) {
-        if (strstr(err, "NoRecordFound") != NULL ||
-            strstr(err, "ConflictingRecordFound") != NULL ||
-            strstr(err, "NonMatchingRecordFound") != NULL ||
-            strstr(err, "ServiceNotAvailable") != NULL) {
-            return VL_NOT_FOUND;
-        }
-        return VL_UNAVAIL;
+        return err_is_not_found(err) ? VL_NOT_FOUND : VL_UNAVAIL;
     }
 
     /* A success reply carries the record under "parameters" on the wire;
-     * accept it at the top level too, since varlinkctl prints it unwrapped and
-     * the exact shape a given peer sends is not worth a surprise. */
+     * accept it at the top level too, since varlinkctl prints it unwrapped. */
     if (json_object_span(reply, len, "parameters", NULL, "record", rec,
                          rec_len) ||
         json_object_span(reply, len, NULL, NULL, "record", rec, rec_len)) {
@@ -177,10 +178,9 @@ enum vl_status vl_parse_reply(const char *reply, size_t len, const char **rec,
 /* --- socket transport ---
  *
  * Not unit-tested here: these need a live peer on an AF_UNIX socket. They are
- * exercised end to end by tools/varlink-probe.c against a stub and against the
- * daemon; an in-tree integration test with a background listener is a
- * worklist item. The pure halves above (request build, reply parse) carry the
- * logic that a unit test can reach. */
+ * exercised end to end by tools/varlink-probe.c and by an out-of-tree stub
+ * check; an in-tree listener-backed integration test is a worklist item. The
+ * pure halves above carry the logic a unit test can reach. */
 
 /* Milliseconds on the monotonic clock. */
 static long now_ms(void)
@@ -191,8 +191,7 @@ static long now_ms(void)
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* Waits for `events` on fd until the deadline. Returns 1 when ready, 0 on
- * timeout or error. */
+/* Waits for `events` on fd until the deadline. 1 when ready, 0 otherwise. */
 static int poll_until(int fd, short events, long deadline)
 {
     for (;;) {
@@ -283,41 +282,80 @@ static int write_all_dl(int fd, const char *buf, size_t len, long deadline)
     return 0;
 }
 
-/* Reads until the reply's terminating NUL, the cap, or the deadline. On
- * success returns 1 and sets *out to the NUL's index (the JSON length). */
-static int read_reply_dl(int fd, char *buf, size_t cap, size_t *out,
-                         long deadline)
+/* A NUL-framed message reader over a caller-provided buffer, so several
+ * replies (GetMemberships streams them) can be read from one connection. */
+struct vl_reader {
+    int fd;
+    long deadline;
+    char *buf;
+    size_t cap;
+    size_t len; /* bytes held in buf */
+    size_t pos; /* next unconsumed byte */
+};
+
+/* Returns the next NUL-terminated message (msg/msglen exclude the NUL,
+ * pointing into the reader's buffer): 1 on a message, 0 at a clean end (EOF
+ * with no partial awaited), -1 on timeout, error, or an over-long message. */
+static int vl_next(struct vl_reader *r, const char **msg, size_t *msglen)
 {
-    size_t got = 0;
+    for (;;) {
+        if (r->pos < r->len) {
+            void *nul = memchr(r->buf + r->pos, '\0', r->len - r->pos);
 
-    while (got < cap) {
-        ssize_t r = read(fd, buf + got, cap - got);
-
-        if (r > 0) {
-            void *nul = memchr(buf + got, '\0', (size_t)r);
-
-            got += (size_t)r;
             if (nul != NULL) {
-                *out = (size_t)((char *)nul - buf);
+                *msg = r->buf + r->pos;
+                *msglen = (size_t)((char *)nul - (r->buf + r->pos));
+                r->pos = (size_t)((char *)nul - r->buf) + 1;
                 return 1;
             }
-            continue;
         }
-        if (r == 0) {
-            return 0; /* EOF before a NUL */
+        /* No complete message buffered: compact and read more. */
+        if (r->pos > 0) {
+            memmove(r->buf, r->buf + r->pos, r->len - r->pos);
+            r->len -= r->pos;
+            r->pos = 0;
         }
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!poll_until(fd, POLLIN, deadline)) {
-                return 0;
+        if (r->len == r->cap) {
+            return -1; /* a message larger than the buffer: not our daemon */
+        }
+        {
+            ssize_t rr = read(r->fd, r->buf + r->len, r->cap - r->len);
+
+            if (rr > 0) {
+                r->len += (size_t)rr;
+                continue;
             }
-            continue;
+            if (rr == 0) {
+                return 0; /* EOF */
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (!poll_until(r->fd, POLLIN, r->deadline)) {
+                    return -1;
+                }
+                continue;
+            }
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
         }
-        if (errno == EINTR) {
-            continue;
-        }
-        return 0;
     }
-    return 0; /* cap reached without a NUL: not our daemon */
+}
+
+/* Connects and sends req (plus its terminating NUL). Returns the fd or -1. */
+static int send_request(const char *socket_path, const char *req, long deadline)
+{
+    int fd = connect_dl(socket_path, deadline);
+
+    if (fd < 0) {
+        return -1;
+    }
+    if (write_all_dl(fd, req, strlen(req), deadline) != 0 ||
+        write_all_dl(fd, "", 1, deadline) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
 }
 
 enum vl_status vl_lookup(const struct ssoossh_config *cfg, const char *method,
@@ -326,9 +364,11 @@ enum vl_status vl_lookup(const struct ssoossh_config *cfg, const char *method,
                          const char **rec, size_t *rec_len, bool *incomplete)
 {
     char req[VL_REQUEST_MAX];
+    struct vl_reader r;
+    const char *msg;
+    size_t msglen;
     long deadline;
-    int fd;
-    size_t rlen = 0;
+    int fd, n;
 
     *rec = NULL;
     *rec_len = 0;
@@ -337,31 +377,107 @@ enum vl_status vl_lookup(const struct ssoossh_config *cfg, const char *method,
     }
 
     /* A request that will not form (e.g. a name longer than the buffer) can
-     * never match a real entry, so treat it as not-found rather than an
-     * error. */
+     * never match a real entry, so treat it as not-found. */
     if (vl_build_request(req, sizeof(req), method, cfg->service, key, strval,
                          numval) != 0) {
         return VL_NOT_FOUND;
     }
 
     deadline = now_ms() + VL_TIMEOUT_MS;
-    fd = connect_dl(cfg->socket, deadline);
+    fd = send_request(cfg->socket, req, deadline);
     if (fd < 0) {
         return VL_UNAVAIL;
     }
 
-    /* The request object and its terminating NUL. */
-    if (write_all_dl(fd, req, strlen(req), deadline) != 0 ||
-        write_all_dl(fd, "", 1, deadline) != 0) {
-        close(fd);
-        return VL_UNAVAIL;
-    }
-
-    if (read_reply_dl(fd, reply, reply_cap, &rlen, deadline) != 1) {
-        close(fd);
-        return VL_UNAVAIL;
-    }
+    r.fd = fd;
+    r.deadline = deadline;
+    r.buf = reply;
+    r.cap = reply_cap;
+    r.len = 0;
+    r.pos = 0;
+    n = vl_next(&r, &msg, &msglen);
     close(fd);
+    if (n != 1) {
+        return VL_UNAVAIL;
+    }
+    return vl_parse_reply(msg, msglen, rec, rec_len, incomplete);
+}
 
-    return vl_parse_reply(reply, rlen, rec, rec_len, incomplete);
+enum vl_status vl_memberships(const struct ssoossh_config *cfg,
+                              const char *query_key, const char *query_value,
+                              const char *want_field, vl_member_cb cb,
+                              void *ctx)
+{
+    char req[VL_REQUEST_MAX];
+    char scratch[VL_REPLY_MAX];
+    struct vl_reader r;
+    long deadline;
+    int fd;
+    enum vl_status result = VL_OK;
+    bool expect_more = true;
+
+    if (build(req, sizeof(req), VL_METHOD_GET_MEMBERSHIPS, true, cfg->service,
+              query_key, query_value, NULL) != 0) {
+        return VL_NOT_FOUND;
+    }
+
+    deadline = now_ms() + VL_TIMEOUT_MS;
+    fd = send_request(cfg->socket, req, deadline);
+    if (fd < 0) {
+        return VL_UNAVAIL;
+    }
+
+    r.fd = fd;
+    r.deadline = deadline;
+    r.buf = scratch;
+    r.cap = sizeof(scratch);
+    r.len = 0;
+    r.pos = 0;
+
+    for (;;) {
+        const char *msg;
+        size_t msglen;
+        char err[128];
+        char value[128];
+        bool cont = false;
+        int n = vl_next(&r, &msg, &msglen);
+
+        if (n == 0) {
+            /* A clean end while a continuation was still promised is a
+             * truncated stream, not an empty set. */
+            result = expect_more ? VL_UNAVAIL : VL_OK;
+            break;
+        }
+        if (n < 0) {
+            result = VL_UNAVAIL;
+            break;
+        }
+
+        if (json_string(msg, msglen, NULL, NULL, "error", err, sizeof(err))) {
+            /* No memberships is reported as a not-found error: an empty set,
+             * not a failure. */
+            result = err_is_not_found(err) ? VL_OK : VL_UNAVAIL;
+            break;
+        }
+
+        if ((json_string(msg, msglen, "parameters", NULL, want_field, value,
+                         sizeof(value)) ||
+             json_string(msg, msglen, NULL, NULL, want_field, value,
+                         sizeof(value))) &&
+            !cb(ctx, value, strlen(value))) {
+            result = VL_OK; /* caller asked to stop */
+            break;
+        }
+
+        if (json_bool(msg, msglen, NULL, NULL, "continues", &cont) && cont) {
+            expect_more = true;
+            continue;
+        }
+        expect_more = false;
+        result = VL_OK;
+        break;
+    }
+
+    close(fd);
+    return result;
 }

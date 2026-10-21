@@ -10,6 +10,7 @@
 #ifndef SSOOSSH_NSS_RECORD_H
 #define SSOOSSH_NSS_RECORD_H
 
+#include <grp.h>
 #include <pwd.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,5 +25,12 @@
  */
 int record_user_to_passwd(const char *rec, size_t rec_len, struct passwd *pwd,
                           struct nss_buf *buf, bool *locked_out);
+
+/* Fills grp from a group record object. groupName and gid are required.
+ * gr_passwd is always "x", and gr_mem is left NULL: the member list is not in
+ * the record (it comes from GetMemberships), so the caller fills it. Returns
+ * 0, EINVAL for a malformed record, or ERANGE when the buffer is too small. */
+int record_group_to_group(const char *rec, size_t rec_len, struct group *grp,
+                          struct nss_buf *buf);
 
 #endif /* SSOOSSH_NSS_RECORD_H */

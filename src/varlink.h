@@ -62,4 +62,21 @@ enum vl_status vl_lookup(const struct ssoossh_config *cfg, const char *method,
                          const uint32_t *numval, char *reply, size_t reply_cap,
                          const char **rec, size_t *rec_len, bool *incomplete);
 
+/* Called once per membership. value/len is the requested field (a user name
+ * when enumerating a group's members, a group name when enumerating a user's
+ * groups), valid only for the duration of the call -- copy it. Return false to
+ * stop the stream early (e.g. the result buffer filled). */
+typedef bool (*vl_member_cb)(void *ctx, const char *value, size_t len);
+
+/* Streams GetMemberships: query_key is "groupName" or "userName" and
+ * query_value the name to match; want_field is the field to hand the callback
+ * ("userName" for a group's members, "groupName" for a user's groups). Calls
+ * cb per membership. Returns VL_OK when the stream completed (including an
+ * empty set, and including an early stop requested by cb), or VL_UNAVAIL on a
+ * transport failure, a truncated stream, or a malformed reply. */
+enum vl_status vl_memberships(const struct ssoossh_config *cfg,
+                              const char *query_key, const char *query_value,
+                              const char *want_field, vl_member_cb cb,
+                              void *ctx);
+
 #endif /* SSOOSSH_NSS_VARLINK_H */

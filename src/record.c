@@ -81,3 +81,28 @@ int record_user_to_passwd(const char *rec, size_t rec_len, struct passwd *pwd,
     }
     return 0;
 }
+
+int record_group_to_group(const char *rec, size_t rec_len, struct group *grp,
+                          struct nss_buf *buf)
+{
+    uint32_t gid;
+    char *name, *passwd;
+    int rc;
+
+    if (!json_u32(rec, rec_len, NULL, NULL, "gid", &gid)) {
+        return EINVAL;
+    }
+    if ((rc = field_to_buf(rec, rec_len, "groupName", NULL, buf, &name)) != 0) {
+        return rc;
+    }
+    passwd = buf_strdup(buf, "x");
+    if (passwd == NULL) {
+        return ERANGE;
+    }
+
+    grp->gr_name = name;
+    grp->gr_passwd = passwd;
+    grp->gr_gid = (gid_t)gid;
+    grp->gr_mem = NULL; /* the caller fills this from GetMemberships */
+    return 0;
+}

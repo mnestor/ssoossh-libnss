@@ -90,30 +90,151 @@ enum nss_status _nss_ssoossh_getpwuid_r(uid_t uid, struct passwd *pwd,
     return finish_user(status, rec, rec_len, pwd, buffer, buflen, errnop);
 }
 
-/* Resolve a group by name, with its member list. Not wired yet. */
+/* Upper bound on members collected for one group, matching the daemon's own
+ * nss.max_group_members ceiling. A larger group is truncated, as the daemon
+ * truncates it. The pointers live in the NSS buffer; this array of pointers to
+ * them is scratch on the stack during the lookup. */
+#define MAX_GROUP_MEMBERS 2048
+
+struct member_collector {
+    struct nss_buf *buf;
+    char *names[MAX_GROUP_MEMBERS];
+    size_t count;
+    bool erange;
+};
+
+/* Copies one member name into the NSS buffer and keeps its pointer. Stops the
+ * stream (returns false) only when the buffer is full. */
+static bool collect_member(void *ctx, const char *value, size_t len)
+{
+    struct member_collector *c = ctx;
+    char *s;
+
+    (void)len;
+    if (c->count >= MAX_GROUP_MEMBERS) {
+        return true; /* truncate like the daemon; keep draining the stream */
+    }
+    s = buf_strdup(c->buf, value);
+    if (s == NULL) {
+        c->erange = true;
+        return false;
+    }
+    c->names[c->count++] = s;
+    return true;
+}
+
+/* Streams the members of gname into grp->gr_mem, allocated in the NSS buffer.
+ * grp must already carry name/passwd/gid. */
+static enum nss_status fill_group_members(const struct ssoossh_config *cfg,
+                                          const char *gname, struct group *grp,
+                                          struct nss_buf *buf, int *errnop)
+{
+    struct member_collector c;
+    enum vl_status s;
+    char **arr;
+    size_t i;
+
+    c.buf = buf;
+    c.count = 0;
+    c.erange = false;
+
+    s = vl_memberships(cfg, "groupName", gname, "userName", collect_member, &c);
+    if (c.erange) {
+        *errnop = ERANGE;
+        return NSS_STATUS_TRYAGAIN;
+    }
+    /* Returning the group with a truncated-to-empty member list would be a
+     * wrong answer a membership decision could turn on, so an unavailable
+     * member stream fails the whole lookup. */
+    if (s != VL_OK) {
+        *errnop = EAGAIN;
+        return NSS_STATUS_UNAVAIL;
+    }
+
+    arr = buf_alloc(buf, (c.count + 1) * sizeof(char *), sizeof(char *));
+    if (arr == NULL) {
+        *errnop = ERANGE;
+        return NSS_STATUS_TRYAGAIN;
+    }
+    for (i = 0; i < c.count; i++) {
+        arr[i] = c.names[i];
+    }
+    arr[c.count] = NULL;
+    grp->gr_mem = arr;
+
+    *errnop = 0;
+    return NSS_STATUS_SUCCESS;
+}
+
+/* Maps a group-record lookup result and, on success, fills members. */
+static enum nss_status finish_group(const struct ssoossh_config *cfg,
+                                    enum vl_status status, const char *rec,
+                                    size_t rec_len, struct group *grp,
+                                    char *buffer, size_t buflen, int *errnop)
+{
+    struct nss_buf b;
+    int rc;
+
+    switch (status) {
+    case VL_OK:
+        break;
+    case VL_NOT_FOUND:
+        *errnop = ENOENT;
+        return NSS_STATUS_NOTFOUND;
+    case VL_UNAVAIL:
+    default:
+        *errnop = EAGAIN;
+        return NSS_STATUS_UNAVAIL;
+    }
+
+    buf_init(&b, buffer, buflen);
+    rc = record_group_to_group(rec, rec_len, grp, &b);
+    if (rc == ERANGE) {
+        *errnop = ERANGE;
+        return NSS_STATUS_TRYAGAIN;
+    }
+    if (rc != 0) {
+        *errnop = ENOENT;
+        return NSS_STATUS_NOTFOUND;
+    }
+    return fill_group_members(cfg, grp->gr_name, grp, &b, errnop);
+}
+
+/* Resolve a group by name, with its member list. */
 enum nss_status _nss_ssoossh_getgrnam_r(const char *name, struct group *grp,
                                         char *buffer, size_t buflen,
                                         int *errnop)
 {
-    (void)name;
-    (void)grp;
-    (void)buffer;
-    (void)buflen;
-    *errnop = ENOSYS;
-    return NSS_STATUS_UNAVAIL;
+    struct ssoossh_config cfg;
+    char reply[VL_REPLY_MAX];
+    const char *rec = NULL;
+    size_t rec_len = 0;
+    enum vl_status status;
+
+    ssoossh_config_load(&cfg, NULL);
+    status = vl_lookup(&cfg, VL_METHOD_GET_GROUP, "groupName", name, NULL,
+                       reply, sizeof(reply), &rec, &rec_len, NULL);
+    return finish_group(&cfg, status, rec, rec_len, grp, buffer, buflen,
+                        errnop);
 }
 
-/* Resolve a group by gid, with its member list. Not wired yet. */
+/* Resolve a group by gid, with its member list. */
 enum nss_status _nss_ssoossh_getgrgid_r(gid_t gid, struct group *grp,
                                         char *buffer, size_t buflen,
                                         int *errnop)
 {
-    (void)gid;
-    (void)grp;
-    (void)buffer;
-    (void)buflen;
-    *errnop = ENOSYS;
-    return NSS_STATUS_UNAVAIL;
+    struct ssoossh_config cfg;
+    char reply[VL_REPLY_MAX];
+    const char *rec = NULL;
+    size_t rec_len = 0;
+    uint32_t id = (uint32_t)gid;
+    enum vl_status status;
+
+    ssoossh_config_load(&cfg, NULL);
+    status = vl_lookup(&cfg, VL_METHOD_GET_GROUP, "gid", NULL, &id, reply,
+                       sizeof(reply), &rec, &rec_len, NULL);
+    return finish_group(&cfg, status, rec, rec_len, grp, buffer, buflen,
+                        errnop);
 }
 
 /* Resolve a shadow entry by name. Not wired yet. */
