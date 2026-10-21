@@ -12,10 +12,18 @@ missing client: it talks the same `io.systemd.UserDatabase` varlink protocol to
 the same unchanged daemon. See issue
 [mnestor/ssoossh#217](https://github.com/mnestor/ssoossh/issues/217).
 
-**Status: scaffold under construction.** The build, the symbol/load/stdio/size
-gates and the result-buffer unit tests pass. The varlink client and the userdb
-record parser are not landed yet, so every NSS entry point currently declines
-(`NSS_STATUS_UNAVAIL`) and a lookup falls through to the next nsswitch source.
+**Status: all four NSS areas resolve; not yet released.** passwd (`getpwnam`,
+`getpwuid`), group (`getgrnam`, `getgrgid`, with members from `GetMemberships`),
+shadow (`getspnam`, a locked entry) and initgroups (`initgroups_dyn`) are wired
+through the varlink client to the daemon. The build, the symbol/load/stdio/size
+gates, the unit suites (buffer packer, JSON reader, record and group parsers,
+config, varlink request/reply, gid list) and `make san` pass. Each entry
+point's full path has been validated end to end against a stub over a real
+socket, and the wire shapes were confirmed against live systemd 257. Still
+open before a release: an in-tree, listener-backed integration test for the
+socket transport (today it is covered out-of-tree and by `tools/varlink-probe.c`),
+packaging (deb/rpm, SELinux policy, the release workflow), and a run against a
+production `ssoossh-nss`.
 
 ## Why a module of our own, when that was declined
 
