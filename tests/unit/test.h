@@ -20,5 +20,6 @@ extern int test_failures;
 
 void buf_tests(void);
 void record_tests(void);
+void config_tests(void);
 
 #endif /* SSOOSSH_NSS_TEST_H */
