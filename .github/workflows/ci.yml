@@ -27,7 +27,7 @@ concurrency:
 env:
   INSTALL_debian: apt-get update && apt-get install -y --no-install-recommends
     ca-certificates build-essential git
-  INSTALL_el: dnf install -y gcc make git glibc-devel
+  INSTALL_el: dnf install -y gcc make git glibc-devel libasan libubsan
 
 jobs:
   linux:
