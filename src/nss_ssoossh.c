@@ -14,9 +14,13 @@
 #include "nss_ssoossh.h"
 
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "buf.h"
 #include "config.h"
+#include "gidlist.h"
+#include "json.h"
 #include "record.h"
 #include "varlink.h"
 
@@ -280,18 +284,110 @@ enum nss_status _nss_ssoossh_getspnam_r(const char *name, struct spwd *spwd,
     return NSS_STATUS_SUCCESS;
 }
 
-/* Append the gids a user belongs to. Not wired yet. */
+/* Collects the group names a user belongs to, strdup'd into a grown array.
+ * initgroups_dyn may allocate (growing the caller's array is its contract), so
+ * a heap scratch list here is within bounds; it is freed before returning. */
+struct name_list {
+    char **names;
+    size_t count;
+    size_t cap;
+    bool oom;
+};
+
+static bool collect_name(void *ctx, const char *value, size_t len)
+{
+    struct name_list *l = ctx;
+    char *s;
+
+    (void)len;
+    if (l->count == l->cap) {
+        size_t next = l->cap != 0 ? l->cap * 2 : 16;
+        char **grown = realloc(l->names, next * sizeof(char *));
+
+        if (grown == NULL) {
+            l->oom = true;
+            return false;
+        }
+        l->names = grown;
+        l->cap = next;
+    }
+    s = strdup(value);
+    if (s == NULL) {
+        l->oom = true;
+        return false;
+    }
+    l->names[l->count++] = s;
+    return true;
+}
+
+static void name_list_free(struct name_list *l)
+{
+    size_t i;
+
+    for (i = 0; i < l->count; i++) {
+        free(l->names[i]);
+    }
+    free(l->names);
+}
+
+/* Append the gids a user belongs to. Enumerates the user's group names via
+ * GetMemberships, resolves each to a gid via GetGroupRecord, and appends it.
+ * A membership or resolution that is unavailable fails the whole call rather
+ * than under-granting supplementary groups; a group that has since vanished is
+ * skipped. The primary `group` is already in the caller's array, so dedup
+ * handles it and it is not read here. */
 enum nss_status _nss_ssoossh_initgroups_dyn(const char *user, gid_t group,
                                             long int *start, long int *size,
                                             gid_t **groupsp, long int limit,
                                             int *errnop)
 {
-    (void)user;
+    struct ssoossh_config cfg;
+    struct name_list list = {NULL, 0, 0, false};
+    char reply[VL_REPLY_MAX];
+    enum vl_status s;
+    size_t i;
+    int failed = 0;
+
     (void)group;
-    (void)start;
-    (void)size;
-    (void)groupsp;
-    (void)limit;
-    *errnop = ENOSYS;
-    return NSS_STATUS_UNAVAIL;
+
+    ssoossh_config_load(&cfg, NULL);
+    s = vl_memberships(&cfg, "userName", user, "groupName", collect_name,
+                       &list);
+    if (list.oom || s != VL_OK) {
+        name_list_free(&list);
+        *errnop = EAGAIN;
+        return NSS_STATUS_UNAVAIL;
+    }
+
+    for (i = 0; i < list.count; i++) {
+        const char *rec = NULL;
+        size_t rec_len = 0;
+        uint32_t gid;
+        enum vl_status gs =
+            vl_lookup(&cfg, VL_METHOD_GET_GROUP, "groupName", list.names[i],
+                      NULL, reply, sizeof(reply), &rec, &rec_len, NULL);
+
+        if (gs == VL_NOT_FOUND) {
+            continue; /* the group vanished between the two reads */
+        }
+        if (gs != VL_OK) {
+            failed = 1;
+            break;
+        }
+        if (!json_u32(rec, rec_len, NULL, NULL, "gid", &gid)) {
+            continue; /* a record we cannot read a gid from */
+        }
+        if (gidlist_add(groupsp, start, size, limit, (gid_t)gid) < 0) {
+            failed = 1;
+            break;
+        }
+    }
+
+    name_list_free(&list);
+    if (failed) {
+        *errnop = EAGAIN;
+        return NSS_STATUS_UNAVAIL;
+    }
+    *errnop = 0;
+    return NSS_STATUS_SUCCESS;
 }

@@ -9,6 +9,7 @@ int main(void)
     record_tests();
     config_tests();
     varlink_tests();
+    gidlist_tests();
 
     if (test_failures != 0) {
         printf("unit: %d failure(s)\n", test_failures);

@@ -22,5 +22,6 @@ void buf_tests(void);
 void record_tests(void);
 void config_tests(void);
 void varlink_tests(void);
+void gidlist_tests(void);
 
 #endif /* SSOOSSH_NSS_TEST_H */
