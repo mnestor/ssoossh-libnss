@@ -237,17 +237,47 @@ enum nss_status _nss_ssoossh_getgrgid_r(gid_t gid, struct group *grp,
                         errnop);
 }
 
-/* Resolve a shadow entry by name. Not wired yet. */
+/* Resolve a shadow entry by name. The record carries the (locked) password
+ * field only for a privileged peer; a usable hash never originates here. */
 enum nss_status _nss_ssoossh_getspnam_r(const char *name, struct spwd *spwd,
                                         char *buffer, size_t buflen,
                                         int *errnop)
 {
-    (void)name;
-    (void)spwd;
-    (void)buffer;
-    (void)buflen;
-    *errnop = ENOSYS;
-    return NSS_STATUS_UNAVAIL;
+    struct ssoossh_config cfg;
+    char reply[VL_REPLY_MAX];
+    const char *rec = NULL;
+    size_t rec_len = 0;
+    struct nss_buf b;
+    enum vl_status status;
+    int rc;
+
+    ssoossh_config_load(&cfg, NULL);
+    status = vl_lookup(&cfg, VL_METHOD_GET_USER, "userName", name, NULL, reply,
+                       sizeof(reply), &rec, &rec_len, NULL);
+    switch (status) {
+    case VL_OK:
+        break;
+    case VL_NOT_FOUND:
+        *errnop = ENOENT;
+        return NSS_STATUS_NOTFOUND;
+    case VL_UNAVAIL:
+    default:
+        *errnop = EAGAIN;
+        return NSS_STATUS_UNAVAIL;
+    }
+
+    buf_init(&b, buffer, buflen);
+    rc = record_user_to_spwd(rec, rec_len, spwd, &b);
+    if (rc == ERANGE) {
+        *errnop = ERANGE;
+        return NSS_STATUS_TRYAGAIN;
+    }
+    if (rc != 0) {
+        *errnop = ENOENT;
+        return NSS_STATUS_NOTFOUND;
+    }
+    *errnop = 0;
+    return NSS_STATUS_SUCCESS;
 }
 
 /* Append the gids a user belongs to. Not wired yet. */

@@ -317,3 +317,32 @@ bool json_object_span(const char *body, size_t len, const char *o1,
     *obj_len = (size_t)(toks[v].end - toks[v].start);
     return true;
 }
+
+int json_array_first_string(const char *body, size_t len, const char *o1,
+                            const char *o2, const char *field, char *out,
+                            size_t out_cap)
+{
+    jsmntok_t toks[MAX_TOKENS];
+    int count;
+    int v = lookup(body, len, o1, o2, field, toks, &count);
+    int first;
+
+    if (v < 0 || toks[v].type != JSMN_ARRAY) {
+        return -1;
+    }
+    if (toks[v].size < 1) {
+        return 0; /* present but empty */
+    }
+    /* jsmn is a pre-order walk, so the array's first element is the next
+     * token. */
+    first = v + 1;
+    if (first >= count || toks[first].type != JSMN_STRING) {
+        return 0;
+    }
+    if (!unescape(body + toks[first].start,
+                  (size_t)(toks[first].end - toks[first].start), out,
+                  out_cap)) {
+        return 0; /* does not fit: treat as no usable value */
+    }
+    return 1;
+}

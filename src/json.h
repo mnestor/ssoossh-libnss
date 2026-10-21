@@ -47,4 +47,13 @@ bool json_object_span(const char *body, size_t len, const char *o1,
                       const char *o2, const char *field, const char **obj,
                       size_t *obj_len);
 
+/* Reads the first element of the array o1.o2.field as a string, unescaping it
+ * into out. Returns 1 when present (out filled), 0 when the array is present
+ * but empty or its first element is not a usable string, and -1 when the field
+ * is absent or not an array. Used for privileged.hashedPassword, where present
+ * vs empty vs absent each map to a different shadow password field. */
+int json_array_first_string(const char *body, size_t len, const char *o1,
+                            const char *o2, const char *field, char *out,
+                            size_t out_cap);
+
 #endif /* SSOOSSH_NSS_JSON_H */

@@ -201,6 +201,83 @@ static void test_group_buffer_too_small(void)
           "group: small buffer is ERANGE");
 }
 
+/* should take sp_pwdp from a present hashedPassword and leave the account open
+ */
+static void test_shadow_active(void)
+{
+    const char *rec = "{\"userName\":\"u\",\"uid\":5,\"gid\":5,"
+                      "\"privileged\":{\"hashedPassword\":[\"*\"]}}";
+    char raw[128];
+    struct nss_buf b;
+    struct spwd sp;
+    int rc;
+
+    buf_init(&b, raw, sizeof(raw));
+    rc = record_user_to_spwd(rec, strlen(rec), &sp, &b);
+    CHECK(rc == 0, "shadow active: parses");
+    CHECK(rc == 0 && strcmp(sp.sp_namp, "u") == 0, "shadow active: sp_namp");
+    CHECK(rc == 0 && strcmp(sp.sp_pwdp, "*") == 0, "shadow active: sp_pwdp *");
+    CHECK(rc == 0 && sp.sp_expire == -1, "shadow active: sp_expire unset");
+    CHECK(rc == 0 && sp.sp_lstchg == -1, "shadow active: sp_lstchg unset");
+}
+
+/* should map an empty hashedPassword to a locked field */
+static void test_shadow_empty_hash(void)
+{
+    const char *rec = "{\"userName\":\"u\",\"uid\":5,\"gid\":5,"
+                      "\"privileged\":{\"hashedPassword\":[]}}";
+    char raw[128];
+    struct nss_buf b;
+    struct spwd sp;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_user_to_spwd(rec, strlen(rec), &sp, &b) == 0 &&
+              strcmp(sp.sp_pwdp, "!*") == 0,
+          "shadow empty hash: sp_pwdp !*");
+}
+
+/* should map an absent privileged section (non-root peer) to "*" */
+static void test_shadow_no_privileged(void)
+{
+    const char *rec = "{\"userName\":\"u\",\"uid\":5,\"gid\":5}";
+    char raw[128];
+    struct nss_buf b;
+    struct spwd sp;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_user_to_spwd(rec, strlen(rec), &sp, &b) == 0 &&
+              strcmp(sp.sp_pwdp, "*") == 0,
+          "shadow no privileged: sp_pwdp *");
+}
+
+/* should set sp_expire when the record is locked */
+static void test_shadow_locked(void)
+{
+    const char *rec = "{\"userName\":\"u\",\"uid\":5,\"gid\":5,"
+                      "\"locked\":true}";
+    char raw[128];
+    struct nss_buf b;
+    struct spwd sp;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_user_to_spwd(rec, strlen(rec), &sp, &b) == 0 &&
+              sp.sp_expire == 1,
+          "shadow locked: sp_expire 1");
+}
+
+/* should decline a record with no userName */
+static void test_shadow_missing_name(void)
+{
+    const char *rec = "{\"uid\":5,\"gid\":5}";
+    char raw[128];
+    struct nss_buf b;
+    struct spwd sp;
+
+    buf_init(&b, raw, sizeof(raw));
+    CHECK(record_user_to_spwd(rec, strlen(rec), &sp, &b) == EINVAL,
+          "shadow missing name: EINVAL");
+}
+
 void record_tests(void)
 {
     test_full_record();
@@ -214,4 +291,9 @@ void record_tests(void)
     test_group_record();
     test_group_missing();
     test_group_buffer_too_small();
+    test_shadow_active();
+    test_shadow_empty_hash();
+    test_shadow_no_privileged();
+    test_shadow_locked();
+    test_shadow_missing_name();
 }

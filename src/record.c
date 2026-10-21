@@ -106,3 +106,46 @@ int record_group_to_group(const char *rec, size_t rec_len, struct group *grp,
     grp->gr_mem = NULL; /* the caller fills this from GetMemberships */
     return 0;
 }
+
+int record_user_to_spwd(const char *rec, size_t rec_len, struct spwd *spwd,
+                        struct nss_buf *buf)
+{
+    char hashed[512];
+    char *name, *pwdp;
+    const char *src;
+    bool locked = false;
+    int rc;
+
+    if ((rc = field_to_buf(rec, rec_len, "userName", NULL, buf, &name)) != 0) {
+        return rc;
+    }
+    (void)json_bool(rec, rec_len, NULL, NULL, "locked", &locked);
+
+    switch (json_array_first_string(rec, rec_len, "privileged", NULL,
+                                    "hashedPassword", hashed, sizeof(hashed))) {
+    case 1:
+        src = hashed; /* the daemon's value, typically "*" */
+        break;
+    case 0:
+        src = "!*"; /* present but empty: locked */
+        break;
+    default:
+        src = "*"; /* absent (non-privileged peer): no password, not locked */
+        break;
+    }
+    pwdp = buf_strdup(buf, src);
+    if (pwdp == NULL) {
+        return ERANGE;
+    }
+
+    spwd->sp_namp = name;
+    spwd->sp_pwdp = pwdp;
+    spwd->sp_lstchg = -1;
+    spwd->sp_min = -1;
+    spwd->sp_max = -1;
+    spwd->sp_warn = -1;
+    spwd->sp_inact = -1;
+    spwd->sp_expire = locked ? 1 : -1;
+    spwd->sp_flag = (unsigned long)-1;
+    return 0;
+}

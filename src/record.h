@@ -12,6 +12,7 @@
 
 #include <grp.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -32,5 +33,14 @@ int record_user_to_passwd(const char *rec, size_t rec_len, struct passwd *pwd,
  * 0, EINVAL for a malformed record, or ERANGE when the buffer is too small. */
 int record_group_to_group(const char *rec, size_t rec_len, struct group *grp,
                           struct nss_buf *buf);
+
+/* Fills spwd from a user record object. userName is required. The password
+ * field follows systemd/nss-systemd: the first privileged.hashedPassword entry
+ * when present (e.g. "*"), "!*" when that array is empty, and "*" when it is
+ * absent (an incomplete record from a non-privileged peer). sp_expire is 1
+ * when the record is locked, otherwise every numeric field is unset (-1). A
+ * usable password hash never originates here. Returns 0, EINVAL, or ERANGE. */
+int record_user_to_spwd(const char *rec, size_t rec_len, struct spwd *spwd,
+                        struct nss_buf *buf);
 
 #endif /* SSOOSSH_NSS_RECORD_H */
