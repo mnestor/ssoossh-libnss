@@ -52,7 +52,7 @@ jobs:
       - name: Install build dependencies
         run: ${{ env[format('INSTALL_{0}', matrix.family)] }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # git describe drives the version string; a checkout owned by a different
       # uid than the container user makes git refuse to read it.
@@ -93,7 +93,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates git clang-format cppcheck
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: clang-format
         run: clang-format --dry-run --Werror
