@@ -6,7 +6,8 @@
 #
 # Deliberately not covered: third_party/jsmn. It is a vendored header pinned
 # to an upstream tag and a hash in its README, not a manifest Dependabot
-# reads; it has to be bumped by hand.
+# reads; it has to be bumped by hand. .github/workflows/upstream-watch.yml
+# watches it and opens an issue when upstream moves.
 version: 2
 
 updates:
